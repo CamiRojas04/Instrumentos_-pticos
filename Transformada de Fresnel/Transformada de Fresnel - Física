@@ -1,0 +1,73 @@
+import numpy as np
+
+# --- Núcleo de la Física y el Análisis de Señales ---
+
+def calcular_difraccion_fresnel_analizada(campo_entrada, L_entrada, longitud_onda, distancia_z):
+    """ --- En esta línea se hace lectura de las dimensiones de la imagen. Debido a que, posteriormente, se utilizará un zero-padding
+        para garantizar que la imagen sea cuadrada, sólo obtenemos el valor de UNA de las dimensiones de la imagen. """
+    N, _ = campo_entrada.shape #Tupla con los valores de los pixeles para una imagen rectangular
+    
+    k = 2 * np.pi / longitud_onda # Módulo del vector de propagación
+    
+    """Longitud física que representa cada píxel. Si la imagen debe tener un lado de 5mm y hay un total de N_x=N_y=500 muestras, cada
+    pixel mide, entonces 10um."""
+    delta_x0 = L_entrada / N 
+    
+    """Este es el eje x de coordenadas del plano de apertura. Al conocer la longitud de la rejilla, esta se puede representar
+    contenida en un plano bidimensional, donde los dos primeros argumentos son los límites del intervalo, inferior y superior, 
+    respectivamente. El último argumento es el total de punto que debe haber sobre el eje. Así, estos puntos están equiespaciados."""
+    x0_coords = np.linspace(-L_entrada / 2, L_entrada / 2, N)
+    
+    #Creación del plano de coordenadas. 
+    """En esta línea, se crean dos matrices. En la matrix X0, se toma el vector x0_coords y se repite fila a fila. Para la matriz
+    Y0, se hace el mismo proceso, salvo que el vector se repite columna a columna. De esta manera, se genera un plano coordenado."""
+    X0, Y0 = np.meshgrid(x0_coords, x0_coords) 
+    
+    #Kernel de Fourier.
+    """Debido a que en el punto anterior se obtuvo el espacio coordenado en términos de dos matrices, las coordenadas del plano de 
+    apertura YA ESTÁN DISCRETIZADAS. De esta manera, simplemente se obtiene una matriz que representa al kernel. Es la fase
+    esférica en aproximación paraxial (parabólica, en este caso)."""
+    fase_entrada = np.exp((1j * k / (2 * distancia_z)) * (X0**2 + Y0**2)) 
+    
+    #Paso 2 de las diapositivas.
+    """Campo U'[n,m,0] preparado."""
+    campo_preparado = campo_entrada * fase_entrada
+    
+    #Paso 3 de las diapositivas.
+    """Cálculo de la transformada rápida de Fourier.
+    Explicación fragmento a fragmento: 
+        (np.fft.ifftshift(campo_preparado) --> Se organiza la matriz inicial para que la transformada lea el origen coordenado, no en el
+         centro, sino en la esquina superior izquierda de la matriz.
+         np.fft.fft2 --> Una vez organizada la matriz del campo, se calcula la transformada rápida de Fourier. Representa el proceso
+         difractivo del campo
+         np.fft.fftshift --> debido a que el campo fue reordenado para que la FFT pudiera leerlo, ahora debe reorganizarse
+         para que el origen coordenado vuelva a estar en el medio de la matriz."""
+
+    campo_transformado = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(campo_preparado)))
+    
+    """Este paso es importante porque se realizó para poder realizar la FFT. Es el tamaño del pixel de salida en el plano de observación"""
+    delta_x_salida = (longitud_onda * distancia_z) / (N * delta_x0) #Página 47 de S05 - Difracción escalar discreta.
+    
+    #Longitud del plano de salida.
+    L_salida = delta_x_salida * N
+    
+    #Este es el mismo procedimiento que se siguió para formular el plano de apertura. 
+    """Se genera un vector que hará las veces de eje coordenado lineal equiespaciado.
+    Luego, se genera el plano de observación 2D."""
+    x_salida_coords = np.linspace(-L_salida / 2, L_salida / 2, N)
+    X_salida, Y_salida = np.meshgrid(x_salida_coords, x_salida_coords)
+    
+    #Paso 4 de las diapositivas. Escalar U[n,m,z]
+    """(np.exp(1j * k * distancia_z) / (1j * longitud_onda * distancia_z)) --> Constante compleja de propagación. e^(ikz/i(lambda)z)
+    np.exp(1j * k / (2 * distancia_z) * (X_salida**2 + Y_salida**2)) --> Fase esférica de salida de la onda."""
+    factor_escala = (np.exp(1j * k * distancia_z) / (1j * longitud_onda * distancia_z)) * \
+                     np.exp(1j * k / (2 * distancia_z) * (X_salida**2 + Y_salida**2))
+                     
+    """La razón de multiplicar el campo U por el cuadrado del tamaño físico de cada píxel, radica en que la difracción
+    es un fenómeno de un espacio continuo que se representa mediante una integral. Al multiplicar por el cuadrado de los trozos 
+    diferenciales, estamos añadiendo el dxdy de la integral original, completando la aproximación a su área física."""
+    campo_final = factor_escala * (delta_x0**2) * campo_transformado
+    
+    intensidad_salida = np.abs(campo_final)**2 #Cálculo de intensidad I=|U[n,m,z]|^2
+    return intensidad_salida, L_salida #Devuelve intensidad en el plano de observación y la longitud del plano.
+
