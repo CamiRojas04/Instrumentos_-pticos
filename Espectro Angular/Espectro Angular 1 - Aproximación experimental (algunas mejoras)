@@ -1,0 +1,69 @@
+"""
+Metodos de espectro angular y Fresnel
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display
+from ipywidgets import interact
+
+#Definicion de la malla
+
+def espectro_cuadrado(radio, z):
+    nx,ny=1080,1080 #pixeles
+    dy=dx=10e-6  #metros/pixel
+
+    # Espacio de coordenadas. La primera parte genera unas coordenadas centradas en 0
+    # Luego se multiplica por dx para darle una coordenda fisica
+
+    x=(np.arange(nx)-nx//2)*dx
+    y=(np.arange(ny)-ny//2)*dy
+    X,Y=np.meshgrid(y,x)  # Matriz 2D. Genera 2 matrices para las coordenadas x,y
+
+
+    #Campo inicial U0. Puede ser cualquiera, se pone un disco como ejemplo
+
+    radio=0.25e-2
+    U0=((abs(X) <= radio) & (abs(Y) <= radio)).astype(np.complex128) # Se recorre las matrices X,Y. Devolviendo booleanos
+    # luego, se pasa de booleanos a complejos
+
+    # Matriz donde se da sentido fisico a los indices de Fourier
+    # Incluye el numero de puntos de la transformada y el espacio de muestreo
+    fx=np.fft.fftfreq(nx, d=dx)
+    fy=np.fft.fftfreq(ny, d=dy)
+    FoX, FoY = np.meshgrid(fx,fy, indexing='xy')
+
+    # Transferencia
+
+    long= 532e-9
+    z= 0.02
+    n=1
+    k=2*n*np.pi/long
+
+    fr2=(FoX*long)**2+(FoY*long)**2
+
+    H = np.exp(1j * k * z * np.sqrt(np.maximum(0.0, 1.0 - fr2)))  # np maximum pone en 1 todo numero menor que cero
+    #Se cancelan las ondas evanescentes
+    H[fr2>1]=0.0  #Todo punto donde fr2 valga mas que 1(onda evanescente) se pone en 0
+
+
+    # Por fin, el espectro angular
+
+    A0 = np.fft.fft2(U0)        # Espectro angular de entrada (no centrado)
+    Az = A0 * H                 # Aplicar H en el dominio de frecuencias
+    Uz = np.fft.ifft2(Az)       # Campo propagado en z
+
+
+    U0v=np.fft.fftshift(U0)
+    Uzv=np.fft.fftshift(Uz)
+
+    # (opcional) Intensidades por si quieres mirar luego
+    I0 = np.abs(U0v)**2
+    Iz = np.abs(Uz)**2
+    plt.figure(); plt.imshow(Iz, cmap="inferno");plt.title("Espectro Angular"); plt.colorbar()
+    plt.show()
+
+    z_slider = widgets.FloatSlider(min=0.01, max=1, step=0.001, description='Propagation distance z (m):')
+    radio_slider = widgets.FloatSlider(min=0.01, max=1, step=0.001, description='radio of shape :')
+    interact(espectro_cuadrado,radio=radio_slider, z=z_slider)
