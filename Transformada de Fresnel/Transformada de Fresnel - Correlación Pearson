@@ -1,0 +1,166 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+from scipy.special import j1
+from scipy.stats import pearsonr
+
+# Generación de Aperturas
+def generar_apertura_circular(N, L, radio):
+    """Genera una apertura circular """
+    coords = np.linspace(-L / 2, L / 2, N)
+    X, Y = np.meshgrid(coords, coords)
+    R = np.sqrt(X**2 + Y**2)
+    apertura = np.zeros((N, N))
+    apertura[R <= radio] = 1.0
+    return apertura.astype(np.complex128)
+
+# Cálculo Teórico
+
+def calcular_patron_airy(N, L_salida, longitud_onda, distancia_z, radio_apertura):
+    """Calcula el patrón de difracción teórico de Fraunhofer
+    para una apertura circular. """
+    coords = np.linspace(-L_salida / 2, L_salida / 2, N)
+    X, Y = np.meshgrid(coords, coords)
+    R = np.sqrt(X**2 + Y**2)
+    k = 2 * np.pi / longitud_onda
+    
+    # Argumento de la función de Bessel, el epsilon evita la división por cero
+    epsilon = 1e-9
+    argumento = k * radio_apertura * R / distancia_z + epsilon
+    
+    # Fórmula del patrón de Airy: I(r) = (2*J1(arg)/arg)^2
+    intensidad = (2 * j1(argumento) / argumento)**2
+    
+    # Se normaliza para que el pico máximo sea 1
+    return intensidad / np.max(intensidad) if np.max(intensidad) > 0 else intensidad
+
+# Núcleo - Física 
+
+def calcular_difraccion_fresnel_analizada(campo_entrada, L_entrada, longitud_onda, distancia_z):
+    """
+    Calcula la difracción de Fresnel usando el método de una sola FFT (transformada).
+    """
+    N, _ = campo_entrada.shape 
+    print(N)
+    k = 2 * np.pi / longitud_onda 
+    delta_x0 = L_entrada / N 
+    x0_coords = np.linspace(-L_entrada / 2, L_entrada / 2, N)
+    X0, Y0 = np.meshgrid(x0_coords, x0_coords) 
+    fase_entrada = np.exp((1j * k / (2 * distancia_z)) * (X0**2 + Y0**2)) 
+    campo_preparado = campo_entrada * fase_entrada
+    campo_transformado = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(campo_preparado)))
+    delta_x_salida = (longitud_onda * distancia_z) / (N * delta_x0) 
+    L_salida = delta_x_salida * N
+    x_salida_coords = np.linspace(-L_salida / 2, L_salida / 2, N)
+    X_salida, Y_salida = np.meshgrid(x_salida_coords, x_salida_coords) 
+    factor_escala = (np.exp(1j * k * distancia_z) / (1j * longitud_onda * distancia_z)) * \
+                     np.exp(1j * k / (2 * distancia_z) * (X_salida**2 + Y_salida**2))                
+    campo_final = factor_escala * (delta_x0**2) * campo_transformado
+    
+    intensidad_salida = np.abs(campo_final)**2 
+    return intensidad_salida, L_salida 
+
+def verificar_muestreo_fresnel(N, L, longitud_onda, distancia_z):
+    """
+    Verifica si se cumple la condición de muestreo para evitar aliasing.
+    La condición es z >= N * delta_x0^2 / lambda.
+    """
+    if longitud_onda <= 0 or N <= 0:
+        return False, "Parámetros inválidos (lambda o N)."
+
+    delta_x0 = L / N
+    z_min = (N * delta_x0**2) / longitud_onda
+    
+    if distancia_z >= z_min:
+        return True, f"Muestreo Válido (z={distancia_z:.3f}m >= z_min={z_min:.3f}m)"
+    else:
+        return False, f"¡Riesgo de Aliasing! (z={distancia_z:.3f}m < z_min={z_min:.3f}m)"
+
+
+if __name__ == '__main__':
+
+    # ===================================================================
+    #  PARÁMETROS DE LA SIMULACIÓN 
+    # ===================================================================
+    longitud_onda = 633e-9  # Longitud de onda de la luz (m)
+    N = 1024                # Resolución (número de muestras en un eje, N x N)
+    distancia_z = 15      # Distancia de propagación (m)
+    L_entrada = 0.01         # Dimensión física del plano de entrada (m)
+    radio = 0.0005           # Radio de la apertura circular (m)
+
+    # VERIFICACIÓN DE MUESTREO 
+
+    valido, msg = verificar_muestreo_fresnel(N, L_entrada, longitud_onda, distancia_z)
+ 
+    print(f"Estado de la Simulación: {msg}")
+    if not valido:
+        print("ADVERTENCIA: Los resultados pueden no ser físicamente precisos.")
+
+
+
+    # GENERACIÓN Y CÁLCULO 
+    # Generar la apertura circular
+    campo_entrada = generar_apertura_circular(N, L_entrada, radio)
+
+    # Calcular la simulación de Fresnel
+    intensidad_sim, L_salida = calcular_difraccion_fresnel_analizada(
+        campo_entrada, L_entrada, longitud_onda, distancia_z)
+
+    # Calcular la solución analítica de Airy
+    intensidad_airy = calcular_patron_airy(
+        N, L_salida, longitud_onda, distancia_z, radio)
+
+
+    #CORRELACIÓN CUANTITATIVA (SSIM) ---
+    # Para una comparación justa, ambas imágenes deben normalizarse al mismo rango [0, 1]
+    # y tener el mismo tipo de dato.
+    sim_norm = intensidad_sim / np.max(intensidad_sim)
+    airy_norm = intensidad_airy # Ya está normalizada por definición en la función
+
+    # Para calcular la correlación de Pearson, las matrices 2D deben aplanarse a vectores 1D.
+    corr_coef, _ = pearsonr(airy_norm.flatten(), sim_norm.flatten())
+    
+    print(f"Coeficiente de Correlación de Pearson: {corr_coef:.6f}")
+
+    #  VISUALIZACIÓN DE RESULTADOS 
+
+    fig = plt.figure(figsize=(12, 8))
+    gs = GridSpec(2, 2, figure=fig, height_ratios=[1, 2.5], hspace=0.4, wspace=0.3)
+    
+    ax_simulacion = fig.add_subplot(gs[1, 0])
+    ax_analitica = fig.add_subplot(gs[1, 1])
+    
+
+
+    # Calcular un límite de visualización para centrar la vista en el patrón
+    radio_primer_minimo = 1.22 * longitud_onda * distancia_z / (2 * radio)
+    limite_visualizacion = 3 * radio_primer_minimo
+
+    # Normalización 
+    intensidad_sim_log = np.abs(intensidad_sim)
+    intensidad_airy_log = np.abs(intensidad_airy * np.max(intensidad_sim))
+    
+    # Gráfico de la Simulación
+    ax_simulacion.set_title("Simulación Numérica (Fresnel)")
+    ax_simulacion.imshow(intensidad_sim_log, cmap='gray', 
+                         extent=[-L_salida/2*1e3, L_salida/2*1e3, -L_salida/2*1e3, L_salida/2*1e3], 
+                         origin='lower')
+    ax_simulacion.set_xlabel("x (mm)")
+    ax_simulacion.set_ylabel("y (mm)")
+    ax_simulacion.set_xlim(-limite_visualizacion * 1e3, limite_visualizacion * 1e3)
+    ax_simulacion.set_ylim(-limite_visualizacion * 1e3, limite_visualizacion * 1e3)
+    ax_simulacion.set_aspect('equal', adjustable='box')
+
+    # Gráfico de la Solución Analítica
+    ax_analitica.set_title("Solución Analítica (Airy)")
+    ax_analitica.imshow(intensidad_airy_log, cmap='gray', 
+                        extent=[-L_salida/2*1e3, L_salida/2*1e3, -L_salida/2*1e3, L_salida/2*1e3], 
+                        origin='lower')
+    ax_analitica.set_xlabel("x (mm)")
+    ax_analitica.set_ylabel("y (mm)")
+    ax_analitica.set_xlim(-limite_visualizacion * 1e3, limite_visualizacion * 1e3)
+    ax_analitica.set_ylim(-limite_visualizacion * 1e3, limite_visualizacion * 1e3)
+    ax_analitica.set_aspect('equal', adjustable='box')
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
