@@ -1,0 +1,97 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+
+def cargar_y_preparar_imagen(ruta_archivo):
+    # El resultado es un vector 3D (altura, anchura, canales_de_color).
+    img = mpimg.imread(ruta_archivo)
+    # Paso 2: Conversión a Escala de Grises y Normalización ---
+    # Se asume una imagen en blanco y negro o se convierte a ella. 
+    # Se normalizan los valores para que estén en el rango de 0 (negro) a 1 (blanco).
+    if img.ndim == 3:
+        imagen_gris = img[:, :, 0]
+    else:
+        imagen_gris = img
+    # La imagen ya normalizada (0 a 1) funciona como nuestra transmitancia de amplitud.
+    apertura = imagen_gris
+    # El array debe ser de tipo complejo para los cálculos posteriores que involucran la fase.
+    return apertura.astype(np.complex128)
+
+def verificar_muestreo_fresnel(N, L_entrada, longitud_onda, distancia_z):    
+    delta_x0 = L_entrada / N  
+    z_min = (N * delta_x0**2) / longitud_onda
+
+    if distancia_z >= z_min:
+        return f"Válido (z = {distancia_z:.2f}m >= z_min = {z_min:.2f}m)"
+    else:
+        return f"Aliasing (z = {distancia_z:.2f}m < z_min = {z_min:.2f}m)"
+
+def calcular_difraccion_fresnel_analizada(campo_entrada, L_entrada, longitud_onda, distancia_z):
+    N, _ = campo_entrada.shape        # Número de muestras (se asume cuadrado)
+    print(N)
+    k = 2 * np.pi / longitud_onda     # Número de onda
+    delta_x0 = L_entrada / N          # Tamaño del píxel en el plano de entrada (m)
+    print(delta_x0)
+    coords_x0 = np.linspace(-L_entrada / 2, L_entrada / 2, N)
+    X0, Y0 = np.meshgrid(coords_x0, coords_x0) # Coordenadas del plano de entrada
+    fase_entrada_cuadratica = np.exp((1j * k / (2 * distancia_z)) * (X0**2 + Y0**2))
+    campo_preparado = campo_entrada * fase_entrada_cuadratica
+    campo_transformado = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(campo_preparado)))
+    delta_x_salida = (longitud_onda * distancia_z) / (N * delta_x0)
+    L_salida = N * delta_x_salida
+    coords_x_salida = np.linspace(-L_salida / 2, L_salida / 2, N)
+    X_salida, Y_salida = np.meshgrid(coords_x_salida, coords_x_salida)
+    fase_salida_cuadratica = np.exp((1j * k / (2 * distancia_z)) * (X_salida**2 + Y_salida**2))
+    factor_escala_complejo = (np.exp(1j * k * distancia_z) / (1j * longitud_onda * distancia_z)) * fase_salida_cuadratica
+    campo_final = factor_escala_complejo * (delta_x0**2) * campo_transformado
+    intensidad_salida = np.abs(campo_final)**2
+    
+    return intensidad_salida, L_salida
+
+if __name__ == '__main__':
+    # ===================================================================
+    # PARÁMETROS 
+    # ===================================================================
+    RUTA_ARCHIVO = 'Transm_E08.png' 
+    L_entrada = 5.8e-3           # Dimensión transversal de la transmitancia (5.8 mm)
+    longitud_onda = 633e-9       # Longitud de onda (633 nm)
+    
+    distancia_z = 0.3         # <--- Distancia (en metros)
+
+    
+    # Ejecución
+    
+    campo_entrada = cargar_y_preparar_imagen(RUTA_ARCHIVO)
+    N = campo_entrada.shape[0] # Se obtiene la resolución (N) desde la imagen cargada.
+
+    # Verificar si hay riesgo de aliasing para la distancia seleccionada.
+    mensaje_estado = verificar_muestreo_fresnel(N, L_entrada, longitud_onda, distancia_z)
+    print(f"Calculando para z = {distancia_z*100:.1f} cm. Estado: {mensaje_estado}")
+
+    # Calcular el patrón de difracción de Fresnel.
+    intensidad, L_salida = calcular_difraccion_fresnel_analizada(campo_entrada, L_entrada, longitud_onda, distancia_z)
+    
+
+    fig, (ax_apertura, ax_intensidad) = plt.subplots(
+        1, 2,
+        figsize=(14, 6),
+        gridspec_kw={'width_ratios': [1, 10], 'wspace': 0.03}
+    )
+
+    # Gráfico de la apertura de entrada
+    ax_apertura.imshow(np.abs(campo_entrada)**2, cmap='gray', extent=[-L_entrada/2*1e3, L_entrada/2*1e3, -L_entrada/2*1e3, L_entrada/2*1e3])
+    ax_apertura.set_title(f"Apertura de Entrada ('{RUTA_ARCHIVO}')", size=11)
+    ax_apertura.set_xlabel("x₀ (mm)")
+    ax_apertura.set_ylabel("y₀ (mm)")
+    ax_apertura.set_aspect('equal', adjustable='box')
+
+
+    # Gráfico del patrón de intensidad calculado
+    im = ax_intensidad.imshow(np.abs(intensidad), cmap='gray', extent=[-L_salida/2*1e3, L_salida/2*1e3, -L_salida/2*1e3, L_salida/2*1e3])
+    ax_intensidad.set_title(f"Patrón de Intensidad a z = {distancia_z*100:.1f} cm")
+    ax_intensidad.set_xlabel("x (mm)")
+    ax_intensidad.set_ylabel("y (mm)")
+    ax_intensidad.set_aspect('equal', adjustable='box')
+
+    fig.tight_layout(rect=[0, 0, 1, 0.8])
+    plt.show()
