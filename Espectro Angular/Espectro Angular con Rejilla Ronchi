@@ -1,0 +1,68 @@
+"""
+Metodo de espectro angular
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+#Definicion de la malla
+
+nx,ny=512,512 #pixeles
+dy=dx=10e-6  #metros/pixel
+
+# Espacio de coordenadas. La primera parte genera unas coordenadas centradas en 0
+# Luego se multiplica por dx para darle una coordenda fisica
+
+x=(np.arange(nx)-nx//2)*dx
+y=(np.arange(ny)-ny//2)*dy
+X,Y=np.meshgrid(x,y,indexing='xy')  # Matriz 2D. Genera 2 matrices para las coordenadas x,y
+
+
+#Campo inicial U0. Puede ser cualquiera, se pone un disco como ejemplo
+
+#radio=0.25e-3
+#U0=(X**2 + Y**2 <= radio**2).astype(np.complex128) # Se recorre las matrices X,Y. Devolviendo booleanos
+
+periodo = 100e-6  # tamaño de periodo en metros
+duty = 0.5        # Ronchi clásico (barras iguales)
+
+U0 = (np.mod(X, periodo) < duty*periodo).astype(np.complex128)
+
+
+# luego, se pasa de booleanos a complejos
+
+# Matriz donde se da sentido fisico a los indices de Fourier
+# Incluye el numero de puntos de la transformada y el espacio de muestreo
+fx=np.fft.fftfreq(nx, d=dx)
+fy=np.fft.fftfreq(ny, d=dy)
+FoX, FoY = np.meshgrid(fx,fy, indexing='xy')
+
+# Transferencia
+
+long= 532e-9
+z= 2*(periodo)**2/long
+n=1
+k=2*n*np.pi/long
+
+fr2=(FoX*long)**2+(FoY*long)**2
+
+H = np.exp(1j * k * z * np.sqrt(np.maximum(0.0, 1.0 - fr2)))  # np maximum pone en 1 todo numero menor que cero
+#Se cancelan las ondas evanescentes
+H[fr2>1]=0.0  #Todo punto donde fr2 valga mas que 1(onda evanescente) se pone en 0
+
+
+# Por fin, el espectro angular
+
+A0 = np.fft.fft2(U0)        # Espectro angular de entrada (no centrado)
+Az = A0 * H                 # Aplicar H en el dominio de frecuencias
+Uz = np.fft.ifft2(Az)       # Campo propagado en z
+
+
+I0 = np.abs(U0)**2
+Iz = np.abs(Uz)**2
+
+
+plt.figure(); plt.imshow(Iz, cmap="gray");plt.title("Espectro Angular para Z_T"); plt.colorbar()
+
+#plt.figure(); plt.imshow(I0, cmap="inferno");plt.title("Espectro Angular"); plt.colorbar()
+plt.show()
