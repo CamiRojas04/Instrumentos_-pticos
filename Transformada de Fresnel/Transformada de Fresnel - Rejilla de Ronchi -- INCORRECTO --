@@ -1,0 +1,129 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+def verificar_muestreo_fresnel(N, L_entrada, longitud_onda, distancia_z):
+    if longitud_onda <= 0 or N <= 0:
+        return False
+
+    delta_x0 = L_entrada / N
+    z_min = (N * delta_x0**2) / longitud_onda
+    
+    if distancia_z >= z_min:
+        print(f"Muestreo de Propagación Válido (z = {distancia_z:.4f}m >= z_min = {z_min:.4f}m)")
+        return True
+    else:
+        print("¡ALIASING! La distancia es demasiado corta.")
+        print(f"   (z = {distancia_z:.4f}m < z_min = {z_min:.4f}m)")
+        return False
+
+def crear_rejilla_ronchi(num_muestras, tamano_plano, periodo_fisico):
+    """Genera una matriz 2D que representa la transmitancia de una rejilla de Ronchi."""
+    coordenadas_x = np.linspace(-tamano_plano/2, tamano_plano/2, num_muestras)
+    perfil_1d_rejilla = (np.sign(np.cos(2 * np.pi * coordenadas_x / periodo_fisico)) + 1) / 2
+    campo_2d_rejilla = np.tile(perfil_1d_rejilla, (num_muestras, 1))
+    return campo_2d_rejilla
+
+def calcular_difraccion_fresnel_analizada(campo_entrada, L_entrada, longitud_onda, distancia_z):
+    N, _ = campo_entrada.shape
+    k = 2 * np.pi / longitud_onda
+    delta_x0 = L_entrada / N
+    x0_coords = np.linspace(-L_entrada / 2, L_entrada / 2, N)
+    X0, Y0 = np.meshgrid(x0_coords, x0_coords)
+    fase_entrada = np.exp((1j * k / (2 * distancia_z)) * (X0**2 + Y0**2))
+    campo_preparado = campo_entrada * fase_entrada
+    campo_transformado = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(campo_preparado)))
+    delta_x_salida = (longitud_onda * distancia_z) / (N * delta_x0)
+    L_salida = delta_x_salida * N
+    x_salida_coords = np.linspace(-L_salida / 2, L_salida / 2, N)
+    X_salida, Y_salida = np.meshgrid(x_salida_coords, x_salida_coords)
+    factor_escala = (np.exp(1j * k * distancia_z) / (1j * longitud_onda * distancia_z)) * \
+                     np.exp((1j * k / (2 * distancia_z)) * (X_salida**2 + Y_salida**2))
+    campo_final = factor_escala * (delta_x0**2) * campo_transformado
+    intensidad_salida = np.abs(campo_final)**2
+    
+    return intensidad_salida, L_salida, x_salida_coords
+
+if __name__ == "__main__":
+    
+    # =========================================================================
+    #  PARÁMETROS FÍSICOS 
+    # =========================================================================
+    numero_de_muestras_grilla = 1024       # Resolución (píxeles).
+    tamano_fisico_del_plano = 5e-3         # Longitud del lado [m] (5 mm).
+    longitud_de_onda = 633e-9          # Longitud de onda [m] (633 nm, láser rojo).
+    
+    # Parámetros para la Rejilla de Ronchi
+    frecuencia_espacial_rejilla = 10e3     # Frecuencia espacial en [pares de líneas / m] (10 lp/mm).
+    periodo_fisico_rejilla = 1 / frecuencia_espacial_rejilla # Periodo d = 1/f [m].
+
+    gamma_visualizacion = 1    # Factor para aumenta el contraste de la imagen.
+    
+    #Teorema de Nyquist
+    tamano_pixel_entrada = tamano_fisico_del_plano / numero_de_muestras_grilla
+    muestras_por_periodo = periodo_fisico_rejilla / tamano_pixel_entrada
+    if muestras_por_periodo < 10: #El mínimo, según las diapositiva, es 2. Se escoge 10 para ser estrictos
+        print("Considere disminuir el tamaño del plano o aumentar la resolución.")
+    else:
+        print(f"Muestreo de Entrada Válido ({muestras_por_periodo:.1f} muestras/periodo)")
+
+
+    # =========================================================================
+    #  DISTANCIA DE PROPAGACIÓN
+    # =========================================================================
+    # Calcula la distancia (zT = 2*d^2 / lambda) con los parámetros
+    # de arriba y escribe el resultado aquí para verificar la autoimagen.
+    distancia_a_propagar = 0.0948
+    
+    print("\n--- CONFIGURACIÓN DE LA SIMULACIÓN ---")
+    print(f"  - Periodo de la rejilla (d): {periodo_fisico_rejilla*1e6:.2f} µm")
+    print(f"  - Se propagará a la distancia z = {distancia_a_propagar*100:.3f} cm.")
+    
+        #  EJECUCIÓN 
+       verificar_muestreo_fresnel(
+        N=numero_de_muestras_grilla, 
+        L_entrada=tamano_fisico_del_plano, 
+        longitud_onda=longitud_de_onda, 
+        distancia_z=distancia_a_propagar
+    )
+    
+    objeto_de_entrada = crear_rejilla_ronchi(numero_de_muestras_grilla, tamano_fisico_del_plano, periodo_fisico_rejilla)
+    
+    intensidad_resultante, tamano_plano_salida, coords_salida = calcular_difraccion_fresnel_analizada(
+        campo_entrada=objeto_de_entrada, 
+        L_entrada=tamano_fisico_del_plano, 
+        longitud_onda=longitud_de_onda, 
+        distancia_z=distancia_a_propagar
+    )
+    
+    #  VISUALIZACIÓN 
+    
+    fig, axs = plt.subplots(1, 2, figsize=(13, 6)) 
+    fig.suptitle(f"Simulación de Difracción para z = {distancia_a_propagar*100:.3f} cm", fontsize=17)
+    
+    limite_mm = tamano_fisico_del_plano / 2 * 1e3
+
+    # Objeto de Entrada
+    axs[0].imshow(objeto_de_entrada, cmap='gray', extent=[-limite_mm, limite_mm, -limite_mm, limite_mm])
+    axs[0].set_title("1. Objeto de Entrada (Rejilla)")
+    axs[0].set_xlabel("x (mm)")
+    axs[0].set_ylabel("y (mm)")
+    
+    # Intensidad de Salida 
+    if intensidad_resultante.max() > 0:
+        intensidad_normalizada = intensidad_resultante / intensidad_resultante.max()
+    else:
+        intensidad_normalizada = intensidad_resultante
+
+    # Aplicación de corrección gamma 
+    intensidad_optimizada = np.power(intensidad_normalizada, gamma_visualizacion)
+
+    axs[1].imshow(
+        intensidad_optimizada, 
+        extent=[-tamano_plano_salida/2*1e3, tamano_plano_salida/2*1e3, -tamano_plano_salida/2*1e3, tamano_plano_salida/2*1e3]
+    )
+    axs[1].set_title("2. Intensidad Resultante")
+    axs[1].set_xlabel("x (mm)")
+    
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
