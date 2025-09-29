@@ -1,0 +1,134 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+from scipy.ndimage import gaussian_filter
+# Propagación y análisis
+def propagar_espectro_angular(campo_incidente, longitud_onda, distancia, paso_pixel):
+    """Propaga un campo óptico complejo mediante el método del espectro angular.
+    La distancia puede ser positiva (propagación) o negativa (retropropagación)."""
+    filas, columnas = campo_incidente.shape
+    k = 2 * np.pi / longitud_onda
+    frecuencia_x = np.fft.fftfreq(columnas, d=paso_pixel)
+    frecuencia_y = np.fft.fftfreq(filas, d=paso_pixel)
+    malla_frecuencias_X, malla_frecuencias_Y = np.meshgrid(frecuencia_x, frecuencia_y)
+    argumento_raiz = 1.0 - (longitud_onda * malla_frecuencias_X)**2 - (longitud_onda * malla_frecuencias_Y)**2
+    # Se anulan las componentes evanescentes que no contribuyen a la propagación.
+    argumento_raiz[argumento_raiz < 0] = 0
+    # Se crea la función de transferencia.
+    funcion_transferencia = np.exp(1j * k * distancia * np.sqrt(argumento_raiz)).astype(np.complex64)
+    espectro_angular_incidente = np.fft.fft2(np.fft.fftshift(campo_incidente))
+    espectro_angular_propagado = espectro_angular_incidente * funcion_transferencia
+    campo_propagado = np.fft.ifftshift(np.fft.ifft2(espectro_angular_propagado))
+    
+    return campo_propagado
+
+def calcular_varianza_fase(campo_complejo, umbral_relativo_amplitud=0.1):
+    """Calcula la varianza de la fase sobre una máscara de soporte definida por
+    las regiones de amplitud significativa del campo."""
+    matriz_amplitud = np.abs(campo_complejo)
+    matriz_fase = np.angle(campo_complejo)
+    amplitud_filtrada = gaussian_filter(matriz_amplitud, sigma=3)
+    amplitud_maxima = np.max(amplitud_filtrada)
+    if amplitud_maxima == 0: return np.inf
+    mascara_soporte = amplitud_filtrada > umbral_relativo_amplitud * amplitud_maxima
+    if not np.any(mascara_soporte): return np.inf
+
+    return np.var(matriz_fase[mascara_soporte])
+
+
+# Reconstrucción
+if __name__ == '__main__':
+    # Parámetros físicos
+    imagen = '4.5cm.jpg'
+    longitud_onda = 633e-9
+    paso_pixel = 1.85e-6 #Se obtuvo del datasheet del sensor
+
+    # Hipótesis - la geometría del montaje.
+    distancia_z_estimada = 0.045
+    # Para onda plana, definir radio_R_estimado = 0.
+    radio_R_estimado = 0 #Ineficiente, prefiera las ondas planas
+
+    # Adquisición del campo
+    Image.MAX_IMAGE_PIXELS = None
+    imagen_bruta = Image.open(imagen).convert('L')
+    
+    # Se convierte la imagen a un array de numpy.
+    matriz_intensidad_original = np.array(imagen_bruta, dtype=np.float32)
+    filas, columnas = matriz_intensidad_original.shape
+
+    dimension_maxima = max(filas, columnas)
+    N_transformada = 2**int(np.ceil(np.log2(dimension_maxima)))
+    
+    # Se crea el lienzo 
+    matriz_intensidad_rellenada = np.zeros((N_transformada, N_transformada), dtype=np.float32)
+    inicio_fila = (N_transformada - filas) // 2
+    inicio_columna = (N_transformada - columnas) // 2
+    matriz_intensidad_rellenada[inicio_fila : inicio_fila + filas, inicio_columna : inicio_columna + columnas] = matriz_intensidad_original
+    
+    intensidad_normalizada = matriz_intensidad_rellenada / np.max(matriz_intensidad_rellenada)
+    amplitud_registrada = np.sqrt(intensidad_normalizada)
+    
+    # Definición del campo complejo principal 
+    campo_complejo_sensor = np.array(amplitud_registrada, dtype=np.complex64)
+
+    # Búsqueda para hallar z apropiada
+    es_onda_plana = (radio_R_estimado == 0) or (radio_R_estimado > 1e6)
+
+    if es_onda_plana:
+        print("Iniciando búsqueda de foco para onda plana...")
+        dominio_z = np.linspace(distancia_z_estimada * 0.7, distancia_z_estimada * 1.3, 101)
+        vector_metricas = []
+        for i, z_candidata in enumerate(dominio_z):
+            # Línea de progreso
+            print(f"  Progreso: {i+1}/{len(dominio_z)} (z={z_candidata*100:.2f} cm)", end='\r')
+            campo_reconstruido = propagar_espectro_angular(campo_complejo_sensor, longitud_onda, -z_candidata, paso_pixel)
+            vector_metricas.append(calcular_varianza_fase(campo_reconstruido))
+        
+        print("\n\nBúsqueda finalizada.")
+        indice_optimo = np.argmin(vector_metricas)
+        z_optima = dominio_z[indice_optimo]
+        print(f"Distancia de reconstrucción encontrada: {z_optima*100:.2f} cm")
+        apertura_reconstruida = propagar_espectro_angular(campo_complejo_sensor, longitud_onda, -z_optima, paso_pixel)
+
+    #Prefiera no usar el else :)    
+    else:
+        print("Iniciando búsqueda de foco para onda esférica...")
+        dominio_z = np.linspace(distancia_z_estimada * 0.7, distancia_z_estimada * 1.3, 31)
+        dominio_R = np.linspace(radio_R_estimado * 0.7, radio_R_estimado * 1.3, 31)
+        mapa_metricas = np.zeros((len(dominio_R), len(dominio_z)))
+
+        eje_coordenadas_objeto = (np.arange(N_transformada) - N_transformada // 2) * paso_pixel
+        malla_espacial_X, malla_espacial_Y = np.meshgrid(eje_coordenadas_objeto, eje_coordenadas_objeto)
+        k = 2 * np.pi / longitud_onda
+
+        for i, R_candidato in enumerate(dominio_R):
+            factor_correccion_fase = np.exp(-1j * k / (2 * R_candidato) * (malla_espacial_X**2 + malla_espacial_Y**2)).astype(np.complex64)
+            for j, z_candidata in enumerate(dominio_z):
+                # Línea de progreso --> Se demora un poquito compilando :(
+                print(f"  Progreso: R {i+1}/{len(dominio_R)}, z {j+1}/{len(dominio_z)}", end='\r')
+                campo_retropropagado = propagar_espectro_angular(campo_complejo_sensor, longitud_onda, -z_candidata, paso_pixel)
+                apertura_estimada = campo_retropropagado * factor_correccion_fase
+                mapa_metricas[i, j] = calcular_varianza_fase(apertura_estimada)
+        
+        print("\n\nBúsqueda finalizada.")
+        indice_optimo = np.unravel_index(np.argmin(mapa_metricas), mapa_metricas.shape)
+        R_optimo = dominio_R[indice_optimo[0]]
+        z_optima = dominio_z[indice_optimo[1]]
+        print(f"Parámetros encontrados: z = {z_optima*100:.2f} cm, R = {R_optimo*100:.2f} cm")
+        
+        campo_retropropagado = propagar_espectro_angular(campo_complejo_sensor, longitud_onda, -z_optima, paso_pixel)
+        factor_correccion_fase = np.exp(-1j * k / (2 * R_optimo) * (malla_espacial_X**2 + malla_espacial_Y**2)).astype(np.complex64)
+        apertura_reconstruida = campo_retropropagado * factor_correccion_fase
+
+    # Visualización plots
+    plt.figure(figsize=(8, 8))
+    extension_fisica_mm = N_transformada * paso_pixel * 1000
+    limites_visualizacion = [-extension_fisica_mm/2, extension_fisica_mm/2, -extension_fisica_mm/2, extension_fisica_mm/2]
+    
+    plt.imshow(np.abs(apertura_reconstruida), cmap='gray', extent=limites_visualizacion)
+    plt.title("Apertura Reconstruida")
+    plt.xlabel("x (mm)")
+    plt.ylabel("y (mm)")
+    plt.colorbar(label="Amplitud Normalizada")
+    plt.tight_layout()
+    plt.show()
